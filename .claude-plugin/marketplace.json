@@ -3,12 +3,12 @@
   "description": "Personal Claude Code plugins by dane.lowe.",
   "owner": {
     "name": "dane.lowe",
-    "email": "dane@concordvisa.com"
+    "email": "dane.r.lowe@gmail.com"
   },
   "plugins": [
     {
       "name": "watch-video",
-      "source": "./",
+      "source": "./watch-video",
       "description": "Watch, analyze, take notes on, answer questions about, or compare a video — YouTube, Loom, or local files.",
       "version": "0.1.0"
     }

@@ -1,0 +1,10 @@
+{
+  "name": "watch-video",
+  "description": "Watch, analyze, take notes on, answer questions about, or compare a video — YouTube, Loom, or local files. Extracts a time-synced transcript plus deduplicated still frames into a queryable manifest.",
+  "version": "0.1.0",
+  "author": {
+    "name": "dane.lowe",
+    "email": "dane@concordvisa.com"
+  },
+  "license": "MIT"
+}

@@ -1,4 +1,33 @@
-import { $ } from "bun";
+import { $, type ShellPromise } from "bun";
+
+export const requireArgValue = (argv: string[], i: number, flag: string): string => {
+  if (i >= argv.length) {
+    console.error(`${flag} requires a value`);
+    process.exit(2);
+  }
+  return argv[i]!;
+};
+
+// Run a shell command with output suppressed on success, but on failure
+// surface the captured stderr (or stdout) so callers see *why* it failed
+// instead of just `command failed: <bin>`.
+export const runQuiet = async (label: string, p: ShellPromise): Promise<void> => {
+  try {
+    await p.quiet();
+  } catch (e: unknown) {
+    if (e && typeof e === "object") {
+      const err = e as { stderr?: Buffer; stdout?: Buffer; exitCode?: number; message?: string };
+      const stderr = err.stderr ? err.stderr.toString().trim() : "";
+      const stdout = err.stdout ? err.stdout.toString().trim() : "";
+      const detail =
+        stderr ||
+        stdout ||
+        (typeof err.exitCode === "number" ? `exit ${err.exitCode}` : err.message || String(e));
+      throw new Error(`${label} failed: ${detail}`);
+    }
+    throw e;
+  }
+};
 
 export type TranscriptSegment = { start: number; end: number; text: string };
 export type Frame = { path: string; timestamp: number; spoken_text: string };

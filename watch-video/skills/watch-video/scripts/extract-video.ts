@@ -15,7 +15,12 @@ import {
   ffprobeDimensions,
   padRegion,
   parseMaskRegionArg,
+  requireArgValue,
+  runQuiet,
 } from "./lib";
+
+const WHISPER_MODEL_RE = /^[A-Za-z0-9._-]+$/;
+const FETCH_TIMEOUT_MS = 600_000; // 10 min — model download is the only network call
 
 const WHISPER_MODELS_DIR = join(homedir(), ".cache", "whisper-models");
 const WHISPER_MODEL_BASE_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
@@ -64,16 +69,16 @@ const parseArgs = (): Args => {
   const manualMask: MaskRegion[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    if (a === "--output-dir") outputDir = argv[++i]!;
-    else if (a === "--interval") interval = parseFloat(argv[++i]!);
-    else if (a === "--whisper-model") whisperModel = argv[++i]!;
+    if (a === "--output-dir") outputDir = requireArgValue(argv, ++i, a);
+    else if (a === "--interval") interval = parseFloat(requireArgValue(argv, ++i, a));
+    else if (a === "--whisper-model") whisperModel = requireArgValue(argv, ++i, a);
     else if (a === "--no-whisper") useWhisper = false;
     else if (a === "--dedupe") dedupe = true;
     else if (a === "--no-auto-mask") autoMask = false;
-    else if (a === "--hash-threshold") hashThreshold = parseInt(argv[++i]!, 10);
+    else if (a === "--hash-threshold") hashThreshold = parseInt(requireArgValue(argv, ++i, a), 10);
     else if (a === "--mask-region") {
       try {
-        manualMask.push(parseMaskRegionArg(argv[++i]!));
+        manualMask.push(parseMaskRegionArg(requireArgValue(argv, ++i, a)));
       } catch (e) {
         die((e as Error).message, 2);
       }
@@ -93,6 +98,11 @@ const parseArgs = (): Args => {
     else die(`Unknown arg: ${a}`, 2);
   }
   if (!input) die("Usage: extract-video.ts <url-or-path> [flags]; see --help", 2);
+  if (!WHISPER_MODEL_RE.test(whisperModel)) {
+    // Prevent path traversal: this string is interpolated into a filesystem
+    // path under WHISPER_MODELS_DIR for the cached model file.
+    die(`Invalid --whisper-model "${whisperModel}"; expected only letters, digits, dots, underscores, dashes`, 2);
+  }
   return { input, outputDir, interval, whisperModel, useWhisper, dedupe, autoMask, hashThreshold, manualMask };
 };
 
@@ -168,7 +178,7 @@ const ensureWhisperModel = async (model: string): Promise<string> => {
   await mkdir(WHISPER_MODELS_DIR, { recursive: true });
   const url = `${WHISPER_MODEL_BASE_URL}/ggml-${model}.bin`;
   console.error(`Downloading whisper model ${model} from ${url} ...`);
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!res.ok) die(`Failed to download whisper model ${model}: HTTP ${res.status}`);
   // Bun.write(path, response) hangs silently on HF's chunked S3 redirect, so
   // buffer the response fully before writing. ~150MB in memory is fine for a
@@ -192,12 +202,16 @@ const transcribeWithWhisper = async (
   bin: string,
 ): Promise<TranscriptSegment[]> => {
   const wav = join(dir, "_audio.wav");
-  await $`ffmpeg -y -loglevel error -i ${videoFile} -ar 16000 -ac 1 -c:a pcm_s16le ${wav}`.quiet();
+  await runQuiet(
+    "ffmpeg audio extract",
+    $`ffmpeg -y -loglevel error -i ${videoFile} -ar 16000 -ac 1 -c:a pcm_s16le ${wav}`,
+  );
   const modelPath = await ensureWhisperModel(model);
   const outBase = join(dir, "_whisper");
-  // -np suppresses progress prints; .quiet() suppresses the result-stream
-  // whisper-cli emits to stdout (we read the JSON from disk anyway).
-  await $`${bin} -m ${modelPath} -f ${wav} -oj -of ${outBase} -np`.quiet();
+  // -np suppresses progress prints; runQuiet suppresses the result-stream
+  // whisper-cli emits to stdout (we read the JSON from disk anyway), and
+  // surfaces stderr if it fails.
+  await runQuiet("whisper-cli", $`${bin} -m ${modelPath} -f ${wav} -oj -of ${outBase} -np`);
   const json = JSON.parse(await readFile(`${outBase}.json`, "utf8"));
   const segs: TranscriptSegment[] = (json.transcription || [])
     .map((s: { offsets?: { from: number; to: number }; text?: string }) => ({
@@ -274,8 +288,24 @@ Return {"mask": []} if there's nothing to mask.`;
   const text = j.content.find((c) => c.type === "text")?.text ?? "";
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error(`no JSON in Haiku response: ${text.slice(0, 200)}`);
-  const parsed = JSON.parse(jsonMatch[0]) as { mask?: MaskRegion[] };
-  return (parsed.mask ?? []).map((m) => padRegion(m, 0.15));
+  const parsed = JSON.parse(jsonMatch[0]) as { mask?: unknown[] };
+  const all = parsed.mask ?? [];
+  const valid = all.filter(isValidMaskRegion);
+  if (valid.length < all.length) {
+    console.error(`auto-mask: dropped ${all.length - valid.length} invalid region(s) from Haiku response`);
+  }
+  return valid.map((m) => padRegion(m, 0.15));
+};
+
+const isValidMaskRegion = (m: unknown): m is MaskRegion => {
+  if (!m || typeof m !== "object") return false;
+  const r = m as Record<string, unknown>;
+  if (typeof r.label !== "string") return false;
+  for (const k of ["x", "y", "w", "h"] as const) {
+    const n = r[k];
+    if (typeof n !== "number" || !Number.isFinite(n) || n < 0 || n > 1) return false;
+  }
+  return true;
 };
 
 const main = async () => {

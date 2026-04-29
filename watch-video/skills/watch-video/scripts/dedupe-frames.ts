@@ -8,6 +8,7 @@ import {
   dedupeByHash,
   ffprobeDimensions,
   parseMaskRegionArg,
+  requireArgValue,
 } from "./lib";
 
 const die = (msg: string, code = 1): never => {
@@ -28,10 +29,10 @@ const parseArgs = (): Args => {
   const masks: MaskRegion[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    if (a === "--hash-threshold") hashThreshold = parseInt(argv[++i]!, 10);
+    if (a === "--hash-threshold") hashThreshold = parseInt(requireArgValue(argv, ++i, a), 10);
     else if (a === "--mask-region") {
       try {
-        masks.push(parseMaskRegionArg(argv[++i]!));
+        masks.push(parseMaskRegionArg(requireArgValue(argv, ++i, a)));
       } catch (e) {
         die((e as Error).message, 2);
       }
